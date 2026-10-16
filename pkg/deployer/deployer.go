@@ -68,6 +68,7 @@ type Deployer struct {
 	Collector         collector.Collector
 	StepStatus        map[int64]bool
 	DeploymentFlag    map[string]string
+	HealthCheckStatus map[string]bool
 }
 
 type APIAttacker struct {
@@ -99,6 +100,7 @@ func InitDeploymentConfiguration(h *helper.DeployerHelper, awsClients []aws.Clie
 		Collector:         h.Collector,
 		AppliedCapacity:   nil,
 		StepStatus:        helper.InitStartStatus(),
+		HealthCheckStatus: map[string]bool{},
 	}
 }
 
@@ -964,12 +966,15 @@ func (d *Deployer) HealthChecking(config schemas.Config) (bool, error) {
 		}
 
 		if isHealthy {
+			d.HealthCheckStatus[region.Region] = true
 			if d.Collector.MetricConfig.Enabled {
 				if err := d.Collector.UpdateStatus(*asg.AutoScalingGroupName, "deployed", nil); err != nil {
 					d.Logger.Errorf("Update status Error, %s : %s", err.Error(), *asg.AutoScalingGroupName)
 				}
 			}
 			finished = append(finished, region.Region)
+		} else {
+			d.HealthCheckStatus[region.Region] = false
 		}
 	}
 
@@ -1087,6 +1092,13 @@ func (d *Deployer) CleanPreviousAutoScalingGroup(config schemas.Config) error {
 	for _, region := range d.Stack.Regions {
 		if config.Region != constants.EmptyString && config.Region != region.Region {
 			d.Logger.Debugf("This region is skipped by user: %s", region.Region)
+			continue
+		}
+
+		// Check if health check passed for this region
+		if healthStatus, exists := d.HealthCheckStatus[region.Region]; exists && !healthStatus {
+			d.Logger.Warnf("[%s] Skipping cleanup of previous ASGs due to failed health check", region.Region)
+			d.Slack.SendSimpleMessage(fmt.Sprintf(":warning: Skipping cleanup of previous ASGs in %s due to failed health check", region.Region))
 			continue
 		}
 

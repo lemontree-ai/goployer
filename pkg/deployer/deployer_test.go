@@ -21,6 +21,7 @@ import (
 
 	"github.com/DevopsArtFactory/goployer/pkg/constants"
 	"github.com/DevopsArtFactory/goployer/pkg/schemas"
+	"github.com/sirupsen/logrus"
 )
 
 func TestDeployer_DecideCapacity(t *testing.T) {
@@ -86,5 +87,33 @@ func TestDeployer_ValidateOption(t *testing.T) {
 	validErr := checkSpotInstanceOption(overRideSpotInstanceType, instanceTypeList, "")
 	if validErr != nil {
 		t.Errorf("Invalid Override Spot Types Option: %s", validErr)
+	}
+}
+
+// Previous ASGs must be kept when the new version failed health checking,
+// otherwise a failed deployment removes the only healthy version.
+func TestDeployer_CleanPreviousAutoScalingGroupSkipsOnFailedHealthCheck(t *testing.T) {
+	newDeployer := func(healthy bool) Deployer {
+		return Deployer{
+			Logger:            logrus.New(),
+			Mode:              constants.BlueGreenDeployment,
+			HealthCheckStatus: map[string]bool{"ap-northeast-2": healthy},
+			PrevAsgs:          map[string][]string{"ap-northeast-2": {"app-v001"}},
+			Stack: schemas.Stack{
+				Regions: []schemas.RegionConfig{{Region: "ap-northeast-2"}},
+			},
+		}
+	}
+
+	// failed health check: cleanup is skipped before any AWS call
+	failed := newDeployer(false)
+	if err := failed.CleanPreviousAutoScalingGroup(schemas.Config{}); err != nil {
+		t.Errorf("cleanup should be skipped when health check failed, got error: %s", err)
+	}
+
+	// passed health check: cleanup proceeds to AWS client selection (no client configured here)
+	passed := newDeployer(true)
+	if err := passed.CleanPreviousAutoScalingGroup(schemas.Config{}); err == nil {
+		t.Error("cleanup should proceed when health check passed")
 	}
 }
